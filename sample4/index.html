@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Great Wave - 神奈川沖浪裏</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+            background: #1a1a2e;
+            font-family: 'Noto Serif JP', serif;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Loading screen */
+        #loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(180deg, #0d1b2a 0%, #1b263b 50%, #415a77 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            transition: opacity 1.5s ease-out;
+        }
+
+        #loading.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loading-text {
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 24px;
+            margin-bottom: 10px;
+            letter-spacing: 8px;
+            font-weight: 300;
+        }
+
+        .loading-subtitle {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+            margin-bottom: 30px;
+            letter-spacing: 4px;
+        }
+
+        .progress-bar {
+            width: 200px;
+            height: 2px;
+            background: rgba(255, 255, 255, 0.2);
+            overflow: hidden;
+            border-radius: 1px;
+        }
+
+        .progress-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #778da9, #e0e1dd);
+            transition: width 0.3s ease;
+        }
+
+        /* Title overlay */
+        #title-overlay {
+            position: fixed;
+            top: 30px;
+            left: 30px;
+            z-index: 100;
+            color: rgba(255, 255, 255, 0.8);
+            pointer-events: none;
+        }
+
+        #title-overlay h1 {
+            font-size: 18px;
+            font-weight: 300;
+            letter-spacing: 4px;
+            margin-bottom: 5px;
+        }
+
+        #title-overlay p {
+            font-size: 11px;
+            letter-spacing: 2px;
+            opacity: 0.6;
+        }
+
+        /* Controls info */
+        #controls-info {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            z-index: 100;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 11px;
+            letter-spacing: 1px;
+        }
+
+        #controls-info p {
+            margin: 4px 0;
+        }
+
+        /* FPS counter */
+        #fps {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 10px;
+            z-index: 100;
+        }
+
+        /* Wave intensity slider */
+        #wave-controls {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 100;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 11px;
+        }
+
+        #wave-controls label {
+            display: block;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+
+        #wave-controls input[type="range"] {
+            width: 120px;
+            -webkit-appearance: none;
+            background: rgba(255, 255, 255, 0.2);
+            height: 2px;
+            border-radius: 1px;
+            outline: none;
+        }
+
+        #wave-controls input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #778da9;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@300;400&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="loading">
+        <div class="loading-text">神奈川沖浪裏</div>
+        <div class="loading-subtitle">The Great Wave off Kanagawa</div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"></div>
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="title-overlay">
+        <h1>富嶽三十六景</h1>
+        <p>葛飾北斎 - Katsushika Hokusai</p>
+    </div>
+
+    <div id="controls-info">
+        <p>Drag to rotate view</p>
+        <p>Scroll to zoom</p>
+    </div>
+
+    <div id="wave-controls">
+        <label>Wave Intensity</label>
+        <input type="range" id="wave-intensity" min="0.5" max="2" step="0.1" value="1">
+    </div>
+
+    <div id="fps"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // ============================================
+        // CONFIGURATION
+        // ============================================
+        const CONFIG = {
+            // Ocean settings
+            oceanSize: 100,
+            oceanSegments: 256,
+
+            // Gerstner wave parameters (multiple waves for complexity)
+            waves: [
+                { amplitude: 2.0, wavelength: 20, speed: 1.2, direction: new THREE.Vector2(1, 0.3), steepness: 0.4 },
+                { amplitude: 1.5, wavelength: 15, speed: 0.8, direction: new THREE.Vector2(0.8, 0.6), steepness: 0.35 },
+                { amplitude: 1.0, wavelength: 10, speed: 1.5, direction: new THREE.Vector2(1, -0.2), steepness: 0.3 },
+                { amplitude: 0.5, wavelength: 5, speed: 2.0, direction: new THREE.Vector2(0.9, 0.4), steepness: 0.25 }
+            ],
+
+            // Foam particles
+            foamParticleCount: 3000,
+            foamSpawnHeight: 1.5,
+
+            // Hokusai color palette (Prussian Blue / 藍色)
+            colors: {
+                deepBlue: 0x0d1b2a,      // 深い藍
+                midBlue: 0x1b263b,       // 中間藍
+                lightBlue: 0x415a77,     // 明るい藍
+                highlight: 0x778da9,     // ハイライト
+                foam: 0xe0e1dd,          // 泡（オフホワイト）
+                sky: 0xc9ada7,           // 空（淡いピンク/黄）
+                fuji: 0xf5f5f5           // 富士山
+            },
+
+            // Camera
+            cameraFOV: 60,
+            cameraNear: 0.1,
+            cameraFar: 1000
+        };
+
+        // ============================================
+        // GLOBAL STATE
+        // ============================================
+        let scene, camera, renderer, composer, controls;
+        let oceanMesh, foamParticles;
+        let clock = new THREE.Clock();
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+        let waveIntensity = 1.0;
+
+        // ============================================
+        // UKIYO-E OCEAN SHADER
+        // ============================================
+        const oceanVertexShader = `
+            uniform float uTime;
+            uniform float uIntensity;
+
+            // Wave parameters
+            uniform vec4 uWave1; // amplitude, wavelength, speed, steepness
+            uniform vec4 uWave2;
+            uniform vec4 uWave3;
+            uniform vec4 uWave4;
+            uniform vec2 uWaveDir1;
+            uniform vec2 uWaveDir2;
+            uniform vec2 uWaveDir3;
+            uniform vec2 uWaveDir4;
+
+            varying vec3 vWorldPosition;
+            varying vec3 vNormal;
+            varying float vWaveHeight;
+            varying float vFoamFactor;
+
+            // Gerstner wave function
+            vec3 gerstnerWave(vec4 wave, vec2 direction, vec2 point, float time, inout vec3 tangent, inout vec3 binormal) {
+                float amplitude = wave.x * uIntensity;
+                float wavelength = wave.y;
+                float speed = wave.z;
+                float steepness = wave.w;
+
+                float k = 2.0 * 3.14159 / wavelength;
+                float c = sqrt(9.8 / k);
+                vec2 d = normalize(direction);
+                float f = k * (dot(d, point) - c * speed * time);
+                float a = steepness / k;
+
+                tangent += vec3(
+                    -d.x * d.x * steepness * sin(f),
+                    d.x * steepness * cos(f),
+                    -d.x * d.y * steepness * sin(f)
+                );
+
+                binormal += vec3(
+                    -d.x * d.y * steepness * sin(f),
+                    d.y * steepness * cos(f),
+                    -d.y * d.y * steepness * sin(f)
+                );
+
+                return vec3(
+                    d.x * a * cos(f),
+                    amplitude * sin(f),
+                    d.y * a * cos(f)
+                );
+            }
+
+            void main() {
+                vec3 pos = position;
+                vec2 point = pos.xz;
+                float time = uTime;
+
+                vec3 tangent = vec3(1.0, 0.0, 0.0);
+                vec3 binormal = vec3(0.0, 0.0, 1.0);
+
+                // Apply multiple Gerstner waves
+                vec3 wave = vec3(0.0);
+                wave += gerstnerWave(uWave1, uWaveDir1, point, time, tangent, binormal);
+                wave += gerstnerWave(uWave2, uWaveDir2, point, time, tangent, binormal);
+                wave += gerstnerWave(uWave3, uWaveDir3, point, time, tangent, binormal);
+                wave += gerstnerWave(uWave4, uWaveDir4, point, time, tangent, binormal);
+
+                pos += wave;
+
+                // Calculate normal
+                vec3 normal = normalize(cross(binormal, tangent));
+
+                // Pass to fragment shader
+                vWorldPosition = (modelMatrix * vec4(pos, 1.0)).xyz;
+                vNormal = normalMatrix * normal;
+                vWaveHeight = wave.y;
+
+                // Foam factor based on wave height and steepness
+                float heightGradient = smoothstep(1.0 * uIntensity, 3.0 * uIntensity, wave.y);
+                float steepnessFactor = 1.0 - dot(normal, vec3(0.0, 1.0, 0.0));
+                vFoamFactor = heightGradient + steepnessFactor * 0.5;
+
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+        `;
+
+        const oceanFragmentShader = `
+            uniform vec3 uDeepBlue;
+            uniform vec3 uMidBlue;
+            uniform vec3 uLightBlue;
+            uniform vec3 uHighlight;
+            uniform vec3 uFoamColor;
+            uniform float uTime;
+
+            varying vec3 vWorldPosition;
+            varying vec3 vNormal;
+            varying float vWaveHeight;
+            varying float vFoamFactor;
+
+            // Simplex noise for foam pattern
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
+
+            float snoise(vec2 v) {
+                const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                                   -0.577350269189626, 0.024390243902439);
+                vec2 i  = floor(v + dot(v, C.yy));
+                vec2 x0 = v -   i + dot(i, C.xx);
+                vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+                vec4 x12 = x0.xyxy + C.xxzz;
+                x12.xy -= i1;
+                i = mod289(i);
+                vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                                        + i.x + vec3(0.0, i1.x, 1.0));
+                vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy),
+                                        dot(x12.zw,x12.zw)), 0.0);
+                m = m*m;
+                m = m*m;
+                vec3 x = 2.0 * fract(p * C.www) - 1.0;
+                vec3 h = abs(x) - 0.5;
+                vec3 ox = floor(x + 0.5);
+                vec3 a0 = x - ox;
+                m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+                vec3 g;
+                g.x  = a0.x  * x0.x  + h.x  * x0.y;
+                g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+                return 130.0 * dot(m, g);
+            }
+
+            void main() {
+                // Base color based on height (ukiyo-e gradient)
+                float heightFactor = smoothstep(-2.0, 3.0, vWaveHeight);
+
+                // Create distinct color bands (ukiyo-e style)
+                vec3 color;
+                if (heightFactor < 0.3) {
+                    color = mix(uDeepBlue, uMidBlue, heightFactor / 0.3);
+                } else if (heightFactor < 0.6) {
+                    color = mix(uMidBlue, uLightBlue, (heightFactor - 0.3) / 0.3);
+                } else if (heightFactor < 0.85) {
+                    color = mix(uLightBlue, uHighlight, (heightFactor - 0.6) / 0.25);
+                } else {
+                    color = mix(uHighlight, uFoamColor, (heightFactor - 0.85) / 0.15);
+                }
+
+                // Add rim lighting effect (wave crest highlight)
+                vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+                float rimLight = 1.0 - max(0.0, dot(viewDir, vNormal));
+                rimLight = pow(rimLight, 3.0);
+                color = mix(color, uFoamColor, rimLight * 0.5);
+
+                // Foam pattern using noise
+                float foamNoise = snoise(vWorldPosition.xz * 0.5 + uTime * 0.3);
+                foamNoise += snoise(vWorldPosition.xz * 1.0 - uTime * 0.2) * 0.5;
+                foamNoise += snoise(vWorldPosition.xz * 2.0 + uTime * 0.4) * 0.25;
+                foamNoise = foamNoise * 0.5 + 0.5;
+
+                // Apply foam based on wave height and steepness
+                float foamThreshold = 1.0 - vFoamFactor;
+                float foam = smoothstep(foamThreshold - 0.1, foamThreshold + 0.1, foamNoise);
+                foam *= vFoamFactor;
+
+                color = mix(color, uFoamColor, foam * 0.8);
+
+                // Add subtle variation for hand-painted look
+                float paintVariation = snoise(vWorldPosition.xz * 0.1) * 0.05;
+                color += paintVariation;
+
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        // ============================================
+        // FOAM PARTICLE SHADER
+        // ============================================
+        const foamVertexShader = `
+            attribute float aSize;
+            attribute float aLife;
+            attribute vec3 aVelocity;
+
+            uniform float uTime;
+            uniform float uIntensity;
+
+            varying float vLife;
+            varying float vSize;
+
+            void main() {
+                vLife = aLife;
+                vSize = aSize;
+
+                // Animate position based on velocity and life
+                vec3 pos = position + aVelocity * (1.0 - aLife) * 2.0;
+
+                // Add gravity effect
+                pos.y -= (1.0 - aLife) * (1.0 - aLife) * 3.0;
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                // Size attenuation
+                gl_PointSize = aSize * uIntensity * (300.0 / -mvPosition.z);
+                gl_PointSize = clamp(gl_PointSize, 1.0, 50.0);
+            }
+        `;
+
+        const foamFragmentShader = `
+            uniform vec3 uColor;
+
+            varying float vLife;
+            varying float vSize;
+
+            void main() {
+                // Circular particle
+                vec2 center = gl_PointCoord - 0.5;
+                float dist = length(center);
+                if (dist > 0.5) discard;
+
+                // Soft edge
+                float alpha = 1.0 - smoothstep(0.3, 0.5, dist);
+                alpha *= vLife; // Fade out as life decreases
+
+                gl_FragColor = vec4(uColor, alpha * 0.8);
+            }
+        `;
+
+        // ============================================
+        // INITIALIZATION
+        // ============================================
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(CONFIG.colors.sky);
+            scene.fog = new THREE.FogExp2(CONFIG.colors.sky, 0.008);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(
+                CONFIG.cameraFOV,
+                window.innerWidth / window.innerHeight,
+                CONFIG.cameraNear,
+                CONFIG.cameraFar
+            );
+            camera.position.set(0, 15, 40);
+            camera.lookAt(0, 0, -10);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
+            container.appendChild(renderer.domElement);
+
+            // Post-processing
+            composer = new EffectComposer(renderer);
+            const renderPass = new RenderPass(scene, camera);
+            composer.addPass(renderPass);
+
+            const bloomPass = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                0.3,   // strength
+                0.4,   // radius
+                0.85   // threshold
+            );
+            composer.addPass(bloomPass);
+
+            // Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 10;
+            controls.maxDistance = 100;
+            controls.maxPolarAngle = Math.PI / 2;
+
+            // Create scene elements
+            createOcean();
+            createFoamParticles();
+            createMountFuji();
+            createSky();
+            createLighting();
+
+            // Event listeners
+            window.addEventListener('resize', onWindowResize);
+            document.getElementById('wave-intensity').addEventListener('input', (e) => {
+                waveIntensity = parseFloat(e.target.value);
+            });
+
+            // Hide loading screen
+            updateLoadingProgress(100);
+        }
+
+        function createOcean() {
+            const geometry = new THREE.PlaneGeometry(
+                CONFIG.oceanSize,
+                CONFIG.oceanSize,
+                CONFIG.oceanSegments,
+                CONFIG.oceanSegments
+            );
+            geometry.rotateX(-Math.PI / 2);
+
+            const material = new THREE.ShaderMaterial({
+                vertexShader: oceanVertexShader,
+                fragmentShader: oceanFragmentShader,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uIntensity: { value: 1.0 },
+
+                    // Wave parameters
+                    uWave1: { value: new THREE.Vector4(
+                        CONFIG.waves[0].amplitude,
+                        CONFIG.waves[0].wavelength,
+                        CONFIG.waves[0].speed,
+                        CONFIG.waves[0].steepness
+                    )},
+                    uWave2: { value: new THREE.Vector4(
+                        CONFIG.waves[1].amplitude,
+                        CONFIG.waves[1].wavelength,
+                        CONFIG.waves[1].speed,
+                        CONFIG.waves[1].steepness
+                    )},
+                    uWave3: { value: new THREE.Vector4(
+                        CONFIG.waves[2].amplitude,
+                        CONFIG.waves[2].wavelength,
+                        CONFIG.waves[2].speed,
+                        CONFIG.waves[2].steepness
+                    )},
+                    uWave4: { value: new THREE.Vector4(
+                        CONFIG.waves[3].amplitude,
+                        CONFIG.waves[3].wavelength,
+                        CONFIG.waves[3].speed,
+                        CONFIG.waves[3].steepness
+                    )},
+                    uWaveDir1: { value: CONFIG.waves[0].direction },
+                    uWaveDir2: { value: CONFIG.waves[1].direction },
+                    uWaveDir3: { value: CONFIG.waves[2].direction },
+                    uWaveDir4: { value: CONFIG.waves[3].direction },
+
+                    // Colors (Hokusai palette)
+                    uDeepBlue: { value: new THREE.Color(CONFIG.colors.deepBlue) },
+                    uMidBlue: { value: new THREE.Color(CONFIG.colors.midBlue) },
+                    uLightBlue: { value: new THREE.Color(CONFIG.colors.lightBlue) },
+                    uHighlight: { value: new THREE.Color(CONFIG.colors.highlight) },
+                    uFoamColor: { value: new THREE.Color(CONFIG.colors.foam) }
+                },
+                side: THREE.DoubleSide
+            });
+
+            oceanMesh = new THREE.Mesh(geometry, material);
+            scene.add(oceanMesh);
+        }
+
+        function createFoamParticles() {
+            const count = CONFIG.foamParticleCount;
+            const positions = new Float32Array(count * 3);
+            const sizes = new Float32Array(count);
+            const lives = new Float32Array(count);
+            const velocities = new Float32Array(count * 3);
+
+            for (let i = 0; i < count; i++) {
+                resetParticle(i, positions, sizes, lives, velocities);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+            geometry.setAttribute('aLife', new THREE.BufferAttribute(lives, 1));
+            geometry.setAttribute('aVelocity', new THREE.BufferAttribute(velocities, 3));
+
+            const material = new THREE.ShaderMaterial({
+                vertexShader: foamVertexShader,
+                fragmentShader: foamFragmentShader,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uIntensity: { value: 1.0 },
+                    uColor: { value: new THREE.Color(CONFIG.colors.foam) }
+                },
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            foamParticles = new THREE.Points(geometry, material);
+            scene.add(foamParticles);
+        }
+
+        function resetParticle(index, positions, sizes, lives, velocities) {
+            const i3 = index * 3;
+
+            // Random position on wave crests
+            const x = (Math.random() - 0.5) * CONFIG.oceanSize * 0.8;
+            const z = (Math.random() - 0.5) * CONFIG.oceanSize * 0.8;
+            const y = CONFIG.foamSpawnHeight + Math.random() * 2;
+
+            positions[i3] = x;
+            positions[i3 + 1] = y;
+            positions[i3 + 2] = z;
+
+            sizes[index] = 5 + Math.random() * 15;
+            lives[index] = Math.random();
+
+            // Velocity (spray direction)
+            velocities[i3] = (Math.random() - 0.5) * 2;
+            velocities[i3 + 1] = Math.random() * 3;
+            velocities[i3 + 2] = (Math.random() - 0.5) * 2;
+        }
+
+        function createMountFuji() {
+            // Create Mount Fuji as a simple cone with snow cap
+            const fujiGroup = new THREE.Group();
+
+            // Main mountain body
+            const mountainGeometry = new THREE.ConeGeometry(8, 12, 32);
+            const mountainMaterial = new THREE.MeshStandardMaterial({
+                color: 0x4a5568,
+                roughness: 0.9,
+                metalness: 0.1
+            });
+            const mountain = new THREE.Mesh(mountainGeometry, mountainMaterial);
+            mountain.position.y = 6;
+            fujiGroup.add(mountain);
+
+            // Snow cap
+            const snowGeometry = new THREE.ConeGeometry(3, 4, 32);
+            const snowMaterial = new THREE.MeshStandardMaterial({
+                color: CONFIG.colors.fuji,
+                roughness: 0.8,
+                metalness: 0.0,
+                emissive: CONFIG.colors.fuji,
+                emissiveIntensity: 0.1
+            });
+            const snow = new THREE.Mesh(snowGeometry, snowMaterial);
+            snow.position.y = 10;
+            fujiGroup.add(snow);
+
+            fujiGroup.position.set(0, -2, -60);
+            fujiGroup.scale.set(1.5, 1.5, 1.5);
+            scene.add(fujiGroup);
+        }
+
+        function createSky() {
+            // Gradient sky using a large sphere
+            const skyGeometry = new THREE.SphereGeometry(200, 32, 32);
+
+            const skyMaterial = new THREE.ShaderMaterial({
+                vertexShader: `
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                        vWorldPosition = worldPosition.xyz;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 uTopColor;
+                    uniform vec3 uBottomColor;
+                    uniform float uOffset;
+                    uniform float uExponent;
+
+                    varying vec3 vWorldPosition;
+
+                    void main() {
+                        float h = normalize(vWorldPosition + uOffset).y;
+                        float t = pow(max(h, 0.0), uExponent);
+                        gl_FragColor = vec4(mix(uBottomColor, uTopColor, t), 1.0);
+                    }
+                `,
+                uniforms: {
+                    uTopColor: { value: new THREE.Color(0xd4a373) },    // Warm top
+                    uBottomColor: { value: new THREE.Color(CONFIG.colors.sky) }, // Pinkish bottom
+                    uOffset: { value: 10 },
+                    uExponent: { value: 0.6 }
+                },
+                side: THREE.BackSide
+            });
+
+            const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+            scene.add(sky);
+        }
+
+        function createLighting() {
+            // Ambient light
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            scene.add(ambientLight);
+
+            // Directional light (sun)
+            const sunLight = new THREE.DirectionalLight(0xfff5e6, 0.8);
+            sunLight.position.set(30, 50, 20);
+            scene.add(sunLight);
+
+            // Hemisphere light for natural sky lighting
+            const hemiLight = new THREE.HemisphereLight(0xd4a373, 0x1b263b, 0.5);
+            scene.add(hemiLight);
+        }
+
+        function updateLoadingProgress(progress) {
+            document.getElementById('progress-fill').style.width = progress + '%';
+            if (progress >= 100) {
+                setTimeout(() => {
+                    document.getElementById('loading').classList.add('hidden');
+                }, 500);
+            }
+        }
+
+        // ============================================
+        // ANIMATION
+        // ============================================
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = clock.getElapsedTime();
+
+            // Update ocean shader
+            if (oceanMesh) {
+                oceanMesh.material.uniforms.uTime.value = time;
+                oceanMesh.material.uniforms.uIntensity.value = waveIntensity;
+            }
+
+            // Update foam particles
+            if (foamParticles) {
+                foamParticles.material.uniforms.uTime.value = time;
+                foamParticles.material.uniforms.uIntensity.value = waveIntensity;
+
+                // Animate particle lives
+                const lives = foamParticles.geometry.attributes.aLife.array;
+                const positions = foamParticles.geometry.attributes.position.array;
+                const sizes = foamParticles.geometry.attributes.aSize.array;
+                const velocities = foamParticles.geometry.attributes.aVelocity.array;
+
+                for (let i = 0; i < CONFIG.foamParticleCount; i++) {
+                    lives[i] -= 0.005;
+
+                    if (lives[i] <= 0) {
+                        resetParticle(i, positions, sizes, lives, velocities);
+                    }
+                }
+
+                foamParticles.geometry.attributes.aLife.needsUpdate = true;
+                foamParticles.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // Update controls
+            controls.update();
+
+            // Render
+            composer.render();
+
+            // FPS counter
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsTime >= 1000) {
+                document.getElementById('fps').textContent = `FPS: ${frameCount}`;
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ============================================
+        // START
+        // ============================================
+        init();
+        animate();
+    </script>
+</body>
+</html>

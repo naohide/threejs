@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>teamLab Style - Flower Garden</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Loading screen */
+        #loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0f0f1a 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            transition: opacity 1.5s ease-out;
+        }
+
+        #loading.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loading-text {
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 18px;
+            margin-bottom: 30px;
+            letter-spacing: 8px;
+            text-transform: uppercase;
+            font-weight: 300;
+        }
+
+        .progress-bar {
+            width: 200px;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            width: 0%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.6);
+            transition: width 0.3s ease;
+        }
+
+        /* Instructions overlay */
+        #instructions {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 11px;
+            z-index: 100;
+            letter-spacing: 1px;
+            transition: opacity 2s ease;
+        }
+
+        #instructions.hidden {
+            opacity: 0;
+        }
+
+        #instructions p {
+            margin: 4px 0;
+        }
+
+        /* FPS counter */
+        #fps {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 10px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="loading-text">Blooming</div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"></div>
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <div id="instructions">
+        <p>Drag to look around</p>
+        <p>Scroll to move</p>
+        <p>Click to bloom</p>
+    </div>
+
+    <div id="fps"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // ============================================
+        // CONFIGURATION
+        // ============================================
+        const CONFIG = {
+            groundSize: 60,
+            archHeight: 30,
+            archWidth: 40,
+
+            treeCount: 20,  // Number of cherry trees (8 per side + 4 in back)
+            grassCount: 200,
+            fallingPetalCount: 400,  // Cherry blossom petals falling
+            maxPlantScale: 2.5,
+            growthSpeed: 0.015,
+
+            cameraFOV: 70,
+            cameraNear: 0.1,
+            cameraFar: 1000,
+            cameraHeight: 1.8,
+
+            moveSpeed: 0.5,
+            lookSensitivity: 0.003,
+
+            // Cherry blossom (桜) color palette - Hokusai style
+            flowerPalette: {
+                // Somei-Yoshino style - pale pink to white
+                sakuraPale: ['#ffeef2', '#ffd9e3', '#ffc4d4', '#ffb7c5', '#ffaabb'],
+                // Yaezakura style - deeper pink
+                sakuraDeep: ['#ffb7c5', '#ff91a4', '#ff7b94', '#ff6584', '#ff4f74'],
+                // Pure white variety
+                sakuraWhite: ['#ffffff', '#fff5f7', '#ffebef', '#ffe1e7', '#ffd7df'],
+                // Shidarezakura - weeping cherry, slightly purple
+                sakuraPurple: ['#f8d7e8', '#f0c0d8', '#e8a8c8', '#e090b8', '#d878a8'],
+                // Mix for variety
+                sakuraMix: ['#ffeef2', '#ffb7c5', '#ff91a4', '#ffd9e3', '#fff5f7']
+            }
+        };
+
+        // ============================================
+        // GLOBAL STATE
+        // ============================================
+        let scene, camera, renderer, composer;
+        let grasses = [];
+        let fallingPetals;
+        let clock = new THREE.Clock();
+        let frameCount = 0;
+        let lastFpsTime = performance.now();
+
+        let cameraYaw = 0;
+        let cameraPitch = 0;
+        let cameraZ = 0;
+        let targetCameraZ = 0;
+
+        let isMouseDown = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+        let loadedCount = 0;
+        // Trees: 8 left + 8 right + 4 back = 20 trees
+        const totalToLoad = CONFIG.treeCount + CONFIG.grassCount;
+
+        // ============================================
+        // 3D FLOWER SHADERS - Hokusai Style
+        // ============================================
+        const flowerVertexShader = `
+            uniform float uTime;
+            uniform float uWindStrength;
+            uniform float uGrowth;
+            uniform vec3 uWindDirection;
+            uniform vec2 uFlowerPosition;
+            uniform float uLayerIndex;  // Which layer of petals (0=inner, 1=middle, 2=outer)
+
+            attribute vec3 aOffset;
+            attribute float aPetalIndex;
+            attribute vec3 aColor;
+            attribute float aRandomSeed;
+
+            varying vec3 vColor;
+            varying vec2 vUv;
+            varying float vAlpha;
+            varying float vPetalIndex;
+            varying float vLayerIndex;
+
+            void main() {
+                vUv = uv;
+                vColor = aColor;
+                vPetalIndex = aPetalIndex;
+                vLayerIndex = uLayerIndex;
+
+                vec3 pos = position;
+
+                // Hokusai-style petal opening - outer petals open more
+                float layerOpenFactor = 0.5 + uLayerIndex * 0.25;
+                float openAngle = mix(0.3, 1.0, uGrowth) * layerOpenFactor;
+
+                // Natural petal curve - like real peony petals
+                float petalLength = length(pos.xy);
+                float curveFactor = petalLength * openAngle;
+
+                // Outer petals droop more (like in Hokusai's paintings)
+                float droopAmount = uLayerIndex * 0.15 * petalLength;
+                pos.z += curveFactor * 0.4 - droopAmount;
+
+                // Gentle wave along petal edge (北斎の繊細な表現)
+                float edgeWave = sin(pos.y * 15.0 + aPetalIndex * 2.0) * 0.02 * petalLength;
+                pos.x += edgeWave;
+
+                // Wind animation - softer, more natural
+                float windPhase = uTime * 1.2 + aRandomSeed * 6.28 + uFlowerPosition.x * 0.08 + uFlowerPosition.y * 0.08;
+                float windEffect = sin(windPhase) * uWindStrength * (0.5 + pos.z * 0.3);
+                windEffect += sin(windPhase * 1.5 + 0.7) * uWindStrength * 0.2;
+
+                pos.x += windEffect * uWindDirection.x * 0.7;
+                pos.z += windEffect * uWindDirection.z * 0.3;
+
+                // Subtle breathing
+                float breathe = sin(uTime * 0.3 + aRandomSeed * 3.14) * 0.02 + 1.0;
+                pos *= breathe * uGrowth;
+
+                pos += aOffset;
+
+                vAlpha = smoothstep(0.0, 0.2, 1.0 - length(vUv - 0.5) * 1.4);
+
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+        `;
+
+        const flowerFragmentShader = `
+            uniform float uTime;
+            uniform vec3 uBaseColor;
+            uniform vec3 uTipColor;
+            uniform float uGlowIntensity;
+
+            varying vec3 vColor;
+            varying vec2 vUv;
+            varying float vAlpha;
+            varying float vPetalIndex;
+            varying float vLayerIndex;
+
+            void main() {
+                float dist = length(vUv - 0.5) * 2.0;
+
+                // Hokusai-style petal shape - softer, more organic edges
+                float petalShape = 1.0 - smoothstep(0.2, 0.95, dist);
+
+                // Color gradient - inner petals lighter, outer darker (like real flowers)
+                float layerColorMix = vLayerIndex * 0.15;
+                vec3 color = mix(uBaseColor, vColor, dist * 0.6 + layerColorMix);
+
+                // Hokusai-style vein pattern (花びらの筋)
+                float veinMain = sin(vUv.y * 25.0 + vPetalIndex * 1.5) * 0.04;
+                float veinSecondary = sin(vUv.y * 50.0 + vUv.x * 10.0) * 0.015;
+                float veinPattern = (veinMain + veinSecondary) * (1.0 - dist * 0.5);
+                color += vec3(veinPattern) * 0.5;
+
+                // Soft inner glow (花の中心の輝き)
+                float innerGlow = pow(1.0 - dist, 3.0) * 0.4;
+                color += innerGlow * uBaseColor;
+
+                // Subtle edge darkening (輪郭の陰影)
+                float edgeDark = smoothstep(0.6, 1.0, dist) * 0.15;
+                color -= edgeDark;
+
+                // Very subtle pulse
+                float glow = (sin(uTime * 0.8 + vPetalIndex * 0.5) * 0.5 + 0.5) * uGlowIntensity * 0.3;
+                color += glow * uTipColor * 0.1;
+
+                float alpha = petalShape * vAlpha;
+                if (alpha < 0.01) discard;
+
+                gl_FragColor = vec4(color, alpha * 0.95);
+            }
+        `;
+
+        // Falling cherry blossom petal shader - Natural falling motion
+        const petalVertexShader = `
+            uniform float uTime;
+            uniform vec3 uWindDirection;
+            uniform float uWindStrength;
+
+            attribute vec3 aVelocity;
+            attribute float aRotationSpeed;
+            attribute float aSize;
+            attribute vec3 aColor;
+            attribute float aLife;
+            attribute float aTumblePhase;
+
+            varying vec3 vColor;
+            varying float vAlpha;
+            varying float vRotation;
+            varying float vTumble;
+
+            void main() {
+                vColor = aColor;
+
+                vec3 pos = position;
+
+                // Slower, more graceful falling - cherry petals fall slowly
+                float fallSpeed = 0.15 + aLife * 0.1;  // Varies by petal
+                float fallProgress = mod(uTime * fallSpeed + aLife * 2.0, 1.0);
+                pos.y -= fallProgress * 30.0;
+
+                // Reset position when fallen - back to tree height
+                if (pos.y < -1.0) {
+                    pos.y += 32.0;
+                }
+
+                // Natural tumbling motion - petals flip and rotate as they fall
+                float tumbleTime = uTime * aRotationSpeed * 0.3 + aTumblePhase;
+                float tumbleAmount = sin(tumbleTime) * 0.5 + 0.5;
+                vTumble = tumbleAmount;
+
+                // Zigzag falling path - like a leaf falling
+                float zigzagFreq = 1.5 + aLife * 0.5;
+                float zigzag = sin(uTime * zigzagFreq + aLife * 6.28) * 0.8;
+                pos.x += zigzag * (1.0 + tumbleAmount * 0.5);
+
+                // Spiral descent component
+                float spiralRadius = 0.3 + sin(fallProgress * 3.14) * 0.2;
+                pos.x += cos(tumbleTime * 2.0) * spiralRadius;
+                pos.z += sin(tumbleTime * 2.0) * spiralRadius * 0.7;
+
+                // Gentle swaying - influenced by height (higher = more sway)
+                float heightFactor = smoothstep(0.0, 20.0, pos.y);
+                float sway = sin(uTime * 0.5 + pos.x * 0.1) * heightFactor * 1.5;
+                pos.x += sway;
+                pos.z += cos(uTime * 0.4 + pos.z * 0.08) * heightFactor * 1.0;
+
+                // Wind gusts - occasional stronger push
+                float gustPhase = uTime * 0.15;
+                float gust = pow(sin(gustPhase) * 0.5 + 0.5, 3.0) * uWindStrength;
+                pos.x += gust * uWindDirection.x * 3.0;
+                pos.z += gust * uWindDirection.z * 2.0;
+
+                // Micro-flutter - tiny rapid movements
+                float flutter = sin(uTime * 8.0 + aLife * 20.0) * 0.05;
+                pos.x += flutter;
+                pos.y += flutter * 0.5;
+
+                // Rotation combines tumble and spin
+                vRotation = uTime * aRotationSpeed + aLife * 6.28 + tumbleAmount * 3.14;
+
+                // Alpha based on height - fade in at top, fade out near ground
+                vAlpha = smoothstep(-1.0, 2.0, pos.y) * smoothstep(28.0, 22.0, pos.y);
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                // Size varies with tumble for 3D effect
+                float sizeVariation = 0.8 + tumbleAmount * 0.4;
+                gl_PointSize = aSize * sizeVariation * (350.0 / -mvPosition.z);
+            }
+        `;
+
+        const petalFragmentShader = `
+            varying vec3 vColor;
+            varying float vAlpha;
+            varying float vRotation;
+            varying float vTumble;
+
+            void main() {
+                vec2 center = gl_PointCoord - 0.5;
+
+                // Rotate the UV coordinates for fluttering effect
+                float c = cos(vRotation);
+                float s = sin(vRotation);
+                vec2 rotatedUV = vec2(
+                    center.x * c - center.y * s,
+                    center.x * s + center.y * c
+                );
+
+                // Apply tumble effect - squash/stretch based on tumble
+                float tumbleFactor = 0.7 + vTumble * 0.6;
+                rotatedUV.x *= tumbleFactor;
+                rotatedUV.y *= (2.0 - tumbleFactor);
+
+                // Cherry blossom petal shape (桜の花びら)
+                // Oval base with heart-shaped notch at tip
+                vec2 uv = rotatedUV * 2.5;  // Scale for better shape control
+
+                // Petal is wider in middle, tapers at base and has notch at tip
+                float yOffset = uv.y + 0.2;  // Shift center down slightly
+
+                // Egg/oval shape - wider at top
+                float width = 0.4 + yOffset * 0.15;
+                width = max(width, 0.1);
+
+                // Basic ellipse
+                float ellipse = (uv.x * uv.x) / (width * width) + (yOffset * yOffset) / 0.6;
+
+                // Heart-shaped notch at top (切り込み)
+                float notchY = yOffset - 0.4;
+                float notchShape = 0.0;
+                if (notchY > 0.0) {
+                    float notchX = abs(uv.x);
+                    notchShape = smoothstep(0.15, 0.0, notchX) * smoothstep(0.0, 0.12, notchY);
+                }
+
+                // Combine shape
+                float petalMask = 1.0 - smoothstep(0.8, 1.0, ellipse);
+                petalMask *= (1.0 - notchShape * 0.7);
+
+                // Soften edges
+                float petalShape = smoothstep(0.0, 0.15, petalMask);
+
+                float alpha = petalShape * vAlpha;
+                if (alpha < 0.1) discard;
+
+                // Color - soft gradient from center to edge
+                float dist = length(rotatedUV);
+                vec3 color = vColor;
+
+                // Lighter in center, slightly pink at edges
+                color = mix(color * 1.1, color * 0.9, smoothstep(0.0, 0.4, dist));
+
+                // Subtle vein from base
+                float veinPattern = sin(uv.y * 12.0 + abs(uv.x) * 4.0) * 0.015;
+                color += veinPattern * (1.0 - dist);
+
+                // Soft inner glow
+                float glow = exp(-dist * dist * 8.0) * 0.1;
+                color += glow;
+
+                // Alpha variation for 3D depth feel
+                float alphaVar = 0.75 + vTumble * 0.25;
+
+                gl_FragColor = vec4(color, alpha * alphaVar);
+            }
+        `;
+
+        // Grass shader
+        const grassVertexShader = `
+            uniform float uTime;
+            uniform float uWindStrength;
+
+            attribute vec3 aOffset;
+            attribute float aHeight;
+            attribute vec3 aColor;
+            attribute float aRandomSeed;
+
+            varying vec3 vColor;
+            varying float vAlpha;
+
+            void main() {
+                vColor = aColor;
+
+                vec3 pos = position;
+
+                // Scale by height
+                pos.y *= aHeight;
+
+                // Wind effect - stronger at top
+                float windPhase = uTime * 1.5 + aRandomSeed * 6.28 + aOffset.x * 0.05;
+                float windEffect = sin(windPhase) * uWindStrength * pos.y * 0.1;
+                windEffect += sin(windPhase * 2.3) * uWindStrength * pos.y * 0.05;
+
+                pos.x += windEffect;
+                pos.z += windEffect * 0.3;
+
+                pos += aOffset;
+
+                vAlpha = smoothstep(0.0, 0.5, pos.y / aHeight);
+
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+        `;
+
+        const grassFragmentShader = `
+            varying vec3 vColor;
+            varying float vAlpha;
+
+            void main() {
+                gl_FragColor = vec4(vColor, vAlpha * 0.8);
+            }
+        `;
+
+        // ============================================
+        // THREE.JS SETUP
+        // ============================================
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050508);
+            scene.fog = new THREE.FogExp2(0x050508, 0.015);
+
+            camera = new THREE.PerspectiveCamera(
+                CONFIG.cameraFOV,
+                window.innerWidth / window.innerHeight,
+                CONFIG.cameraNear,
+                CONFIG.cameraFar
+            );
+            camera.position.set(0, CONFIG.cameraHeight, 0);
+
+            renderer = new THREE.WebGLRenderer({
+                antialias: true,
+                alpha: true
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
+            container.appendChild(renderer.domElement);
+
+            // Post-processing for bloom effect
+            composer = new EffectComposer(renderer);
+            const renderPass = new RenderPass(scene, camera);
+            composer.addPass(renderPass);
+
+            const bloomPass = new UnrealBloomPass(
+                new THREE.Vector2(window.innerWidth, window.innerHeight),
+                1.2,   // strength - increased for teamLab glow
+                0.5,   // radius
+                0.75   // threshold
+            );
+            composer.addPass(bloomPass);
+
+            // Lighting setup
+            setupLighting();
+
+            createGround();
+            createArchCeiling();
+            create3DFlowers();
+            create3DGrass();
+            createFallingPetals();
+
+            window.addEventListener('resize', onWindowResize);
+            setupControls();
+        }
+
+        function setupLighting() {
+            // Very subtle ambient for depth
+            const ambientLight = new THREE.AmbientLight(0x202030, 0.2);
+            scene.add(ambientLight);
+
+            // Soft hemisphere light
+            const hemiLight = new THREE.HemisphereLight(0xffeeff, 0x080820, 0.3);
+            scene.add(hemiLight);
+
+            // Colored point lights for atmosphere - teamLab style
+            const lightConfigs = [
+                { color: 0xff6090, pos: [-12, 8, -8], intensity: 0.6 },
+                { color: 0x6090ff, pos: [12, 6, -5], intensity: 0.5 },
+                { color: 0xffa040, pos: [0, 10, 12], intensity: 0.4 },
+                { color: 0xa060ff, pos: [-8, 5, 8], intensity: 0.5 },
+                { color: 0x60ffa0, pos: [10, 7, 6], intensity: 0.4 },
+                { color: 0xff60a0, pos: [5, 12, -12], intensity: 0.3 },
+                { color: 0x40a0ff, pos: [-6, 9, -15], intensity: 0.4 }
+            ];
+
+            lightConfigs.forEach(({ color, pos, intensity }) => {
+                const light = new THREE.PointLight(color, intensity, 35);
+                light.position.set(...pos);
+                scene.add(light);
+            });
+        }
+
+        function createGround() {
+            const geometry = new THREE.PlaneGeometry(CONFIG.groundSize, CONFIG.groundSize, 60, 60);
+
+            const positions = geometry.attributes.position;
+            for (let i = 0; i < positions.count; i++) {
+                const x = positions.getX(i);
+                const z = positions.getZ(i);
+                positions.setY(i, Math.sin(x * 0.3) * Math.cos(z * 0.3) * 0.15);
+            }
+            geometry.computeVertexNormals();
+
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x0a0a0f,
+                roughness: 0.95,
+                metalness: 0.05,
+                side: THREE.DoubleSide
+            });
+
+            const ground = new THREE.Mesh(geometry, material);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = 0;
+            scene.add(ground);
+        }
+
+        function createArchCeiling() {
+            const archGeometry = new THREE.BufferGeometry();
+            const vertices = [];
+            const indices = [];
+            const uvs = [];
+
+            const segments = 60;
+            const rings = 30;
+
+            for (let i = 0; i <= rings; i++) {
+                const v = i / rings;
+                const z = (v - 0.5) * CONFIG.groundSize;
+
+                for (let j = 0; j <= segments; j++) {
+                    const u = j / segments;
+                    const angle = (u - 0.5) * Math.PI;
+
+                    const x = Math.cos(angle) * CONFIG.archWidth / 2;
+                    const y = Math.sin(angle) * CONFIG.archHeight;
+
+                    if (y >= 0) {
+                        vertices.push(x, y, z);
+                        uvs.push(u, v);
+                    }
+                }
+            }
+
+            for (let i = 0; i < rings; i++) {
+                for (let j = 0; j < segments; j++) {
+                    const a = i * (segments + 1) + j;
+                    const b = a + 1;
+                    const c = a + (segments + 1);
+                    const d = c + 1;
+
+                    indices.push(a, b, c);
+                    indices.push(b, d, c);
+                }
+            }
+
+            archGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            archGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            archGeometry.setIndex(indices);
+            archGeometry.computeVertexNormals();
+
+            const archMaterial = new THREE.MeshStandardMaterial({
+                color: 0x080810,
+                roughness: 0.9,
+                metalness: 0.1,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.85
+            });
+
+            const arch = new THREE.Mesh(archGeometry, archMaterial);
+            scene.add(arch);
+        }
+
+        // ============================================
+        // CHERRY TREE CREATION - Realistic Structure
+        // ============================================
+
+        // Store all tree data
+        let cherryTrees = [];
+
+        function create3DFlowers() {
+            // Create cherry tree tunnel/grove
+            const treeCount = 8;  // Trees on each side
+
+            // Create trees along both sides of a path
+            for (let i = 0; i < treeCount; i++) {
+                const progress = i / (treeCount - 1);
+                const z = (progress - 0.5) * (CONFIG.groundSize - 10);
+
+                // Left side tree
+                createCherryTree(-8 - Math.random() * 3, z + (Math.random() - 0.5) * 3, i);
+
+                // Right side tree
+                createCherryTree(8 + Math.random() * 3, z + (Math.random() - 0.5) * 3, i + treeCount);
+
+                updateLoadingProgress();
+                updateLoadingProgress();
+            }
+
+            // Add some trees in the back for depth
+            for (let i = 0; i < 4; i++) {
+                const x = (Math.random() - 0.5) * 20;
+                const z = -CONFIG.groundSize / 2 + 5 + Math.random() * 5;
+                createCherryTree(x, z, treeCount * 2 + i);
+                updateLoadingProgress();
+            }
+        }
+
+        function createCherryTree(x, z, index) {
+            const treeGroup = new THREE.Group();
+            treeGroup.position.set(x, 0, z);
+
+            // Tree parameters
+            const trunkHeight = 3 + Math.random() * 2;
+            const trunkRadius = 0.15 + Math.random() * 0.1;
+
+            // Create trunk with bark texture
+            const trunk = createTrunk(trunkHeight, trunkRadius);
+            treeGroup.add(trunk);
+
+            // Create main branches
+            const branchData = createBranches(trunkHeight, trunkRadius, x, z);
+            branchData.branches.forEach(branch => treeGroup.add(branch));
+
+            // Create flower clusters on branches
+            const flowerData = createFlowerClusters(branchData.branchEnds, x, z);
+
+            scene.add(treeGroup);
+
+            // Store tree data for animation
+            cherryTrees.push({
+                group: treeGroup,
+                flowers: flowerData.flowers,
+                materials: flowerData.materials,
+                position: new THREE.Vector3(x, 0, z)
+            });
+        }
+
+        function createTrunk(height, radius) {
+            // Cherry tree bark - dark grayish-brown with horizontal lines
+            const trunkGeometry = new THREE.CylinderGeometry(
+                radius * 0.8,  // Top radius (slightly thinner)
+                radius,        // Bottom radius
+                height,
+                12,
+                8
+            );
+
+            // Add some irregularity to trunk
+            const positions = trunkGeometry.attributes.position;
+            for (let i = 0; i < positions.count; i++) {
+                const y = positions.getY(i);
+                const noise = Math.sin(y * 5) * 0.02 + Math.cos(y * 8 + i) * 0.01;
+                positions.setX(i, positions.getX(i) + noise);
+                positions.setZ(i, positions.getZ(i) + noise);
+            }
+            trunkGeometry.computeVertexNormals();
+
+            // Cherry bark material
+            const trunkMaterial = new THREE.MeshStandardMaterial({
+                color: 0x4a3c31,
+                roughness: 0.9,
+                metalness: 0.0
+            });
+
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.y = height / 2;
+            trunk.castShadow = true;
+
+            return trunk;
+        }
+
+        function createBranches(trunkHeight, trunkRadius, treeX, treeZ) {
+            const branches = [];
+            const branchEnds = [];  // Store end points for flower placement
+
+            const branchMaterial = new THREE.MeshStandardMaterial({
+                color: 0x5a4a3d,
+                roughness: 0.85,
+                metalness: 0.0
+            });
+
+            // Main branches (3-5 per tree)
+            const mainBranchCount = 3 + Math.floor(Math.random() * 3);
+
+            for (let i = 0; i < mainBranchCount; i++) {
+                const angle = (i / mainBranchCount) * Math.PI * 2 + Math.random() * 0.5;
+                const startY = trunkHeight * (0.6 + Math.random() * 0.3);
+                const length = 2 + Math.random() * 2;
+                const upwardAngle = 0.2 + Math.random() * 0.4;  // Branches go slightly upward
+
+                // Create curved branch using CatmullRomCurve3
+                const branchCurve = new THREE.CatmullRomCurve3([
+                    new THREE.Vector3(0, startY, 0),
+                    new THREE.Vector3(
+                        Math.cos(angle) * length * 0.3,
+                        startY + length * upwardAngle * 0.3,
+                        Math.sin(angle) * length * 0.3
+                    ),
+                    new THREE.Vector3(
+                        Math.cos(angle) * length * 0.7,
+                        startY + length * upwardAngle * 0.6,
+                        Math.sin(angle) * length * 0.7
+                    ),
+                    new THREE.Vector3(
+                        Math.cos(angle) * length,
+                        startY + length * upwardAngle,
+                        Math.sin(angle) * length
+                    )
+                ]);
+
+                const branchGeometry = new THREE.TubeGeometry(
+                    branchCurve,
+                    12,
+                    trunkRadius * 0.4,
+                    8,
+                    false
+                );
+
+                const branch = new THREE.Mesh(branchGeometry, branchMaterial);
+                branches.push(branch);
+
+                // Store branch end for flower placement
+                const endPoint = branchCurve.getPoint(1);
+                branchEnds.push({
+                    position: endPoint,
+                    direction: new THREE.Vector3(Math.cos(angle), upwardAngle, Math.sin(angle)).normalize()
+                });
+
+                // Create sub-branches
+                const subBranchCount = 2 + Math.floor(Math.random() * 3);
+                for (let j = 0; j < subBranchCount; j++) {
+                    const t = 0.4 + (j / subBranchCount) * 0.5;  // Position along main branch
+                    const subStart = branchCurve.getPoint(t);
+                    const subAngle = angle + (Math.random() - 0.5) * 1.5;
+                    const subLength = 0.8 + Math.random() * 1.2;
+                    const subUpward = 0.1 + Math.random() * 0.3;
+
+                    const subCurve = new THREE.CatmullRomCurve3([
+                        subStart,
+                        new THREE.Vector3(
+                            subStart.x + Math.cos(subAngle) * subLength * 0.5,
+                            subStart.y + subLength * subUpward * 0.5,
+                            subStart.z + Math.sin(subAngle) * subLength * 0.5
+                        ),
+                        new THREE.Vector3(
+                            subStart.x + Math.cos(subAngle) * subLength,
+                            subStart.y + subLength * subUpward,
+                            subStart.z + Math.sin(subAngle) * subLength
+                        )
+                    ]);
+
+                    const subGeometry = new THREE.TubeGeometry(
+                        subCurve,
+                        8,
+                        trunkRadius * 0.2,
+                        6,
+                        false
+                    );
+
+                    const subBranch = new THREE.Mesh(subGeometry, branchMaterial);
+                    branches.push(subBranch);
+
+                    // Store sub-branch end
+                    const subEnd = subCurve.getPoint(1);
+                    branchEnds.push({
+                        position: subEnd,
+                        direction: new THREE.Vector3(
+                            Math.cos(subAngle),
+                            subUpward,
+                            Math.sin(subAngle)
+                        ).normalize()
+                    });
+
+                    // Add tiny twigs
+                    const twigCount = 2 + Math.floor(Math.random() * 2);
+                    for (let k = 0; k < twigCount; k++) {
+                        const twigT = 0.3 + Math.random() * 0.6;
+                        const twigStart = subCurve.getPoint(twigT);
+                        const twigAngle = subAngle + (Math.random() - 0.5) * 2;
+                        const twigLength = 0.3 + Math.random() * 0.4;
+
+                        const twigEnd = new THREE.Vector3(
+                            twigStart.x + Math.cos(twigAngle) * twigLength,
+                            twigStart.y + twigLength * 0.2,
+                            twigStart.z + Math.sin(twigAngle) * twigLength
+                        );
+
+                        const twigCurve = new THREE.CatmullRomCurve3([twigStart, twigEnd]);
+                        const twigGeometry = new THREE.TubeGeometry(twigCurve, 4, trunkRadius * 0.08, 4, false);
+                        const twig = new THREE.Mesh(twigGeometry, branchMaterial);
+                        branches.push(twig);
+
+                        branchEnds.push({
+                            position: twigEnd,
+                            direction: new THREE.Vector3(
+                                Math.cos(twigAngle),
+                                0.2,
+                                Math.sin(twigAngle)
+                            ).normalize(),
+                            isTwig: true
+                        });
+                    }
+                }
+            }
+
+            return { branches, branchEnds };
+        }
+
+        function createFlowerClusters(branchEnds, treeX, treeZ) {
+            const allFlowers = [];
+            const allMaterials = [];
+
+            // Color palettes for variety
+            const palettes = [
+                CONFIG.flowerPalette.sakuraPale,
+                CONFIG.flowerPalette.sakuraDeep,
+                CONFIG.flowerPalette.sakuraWhite,
+                CONFIG.flowerPalette.sakuraMix
+            ];
+
+            branchEnds.forEach((branchEnd, index) => {
+                // More flowers on main branches, fewer on twigs
+                const clusterSize = branchEnd.isTwig ?
+                    1 + Math.floor(Math.random() * 2) :
+                    2 + Math.floor(Math.random() * 4);
+
+                const palette = palettes[Math.floor(Math.random() * palettes.length)];
+
+                for (let i = 0; i < clusterSize; i++) {
+                    // Slight offset from branch end
+                    const offset = new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.15,
+                        (Math.random() - 0.5) * 0.1,
+                        (Math.random() - 0.5) * 0.15
+                    );
+
+                    const flowerPos = branchEnd.position.clone().add(offset);
+
+                    // Create single cherry blossom
+                    const flowerData = createSingleCherryBlossom(
+                        flowerPos,
+                        branchEnd.direction,
+                        palette,
+                        treeX,
+                        treeZ
+                    );
+
+                    if (flowerData) {
+                        allFlowers.push(flowerData.mesh);
+                        allMaterials.push(flowerData.material);
+
+                        // Add to scene (relative to tree group handled elsewhere)
+                        scene.add(flowerData.group);
+                    }
+                }
+            });
+
+            return { flowers: allFlowers, materials: allMaterials };
+        }
+
+        function createSingleCherryBlossom(position, direction, palette, treeX, treeZ) {
+            const petalCount = 5;
+            const flowerGroup = new THREE.Group();
+
+            // Create petal geometry
+            const petalGeometry = createCherryBlossomPetalGeometry();
+
+            // Petal material with shader
+            const petalMaterial = new THREE.ShaderMaterial({
+                vertexShader: flowerVertexShader,
+                fragmentShader: flowerFragmentShader,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uWindStrength: { value: 0.08 },
+                    uGrowth: { value: 0.9 + Math.random() * 0.1 },
+                    uWindDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
+                    uFlowerPosition: { value: new THREE.Vector2(treeX + position.x, treeZ + position.z) },
+                    uLayerIndex: { value: 0 },
+                    uBaseColor: { value: new THREE.Color('#ffffff') },
+                    uTipColor: { value: new THREE.Color(palette[Math.floor(Math.random() * palette.length)]) },
+                    uGlowIntensity: { value: 0.4 }
+                },
+                transparent: true,
+                side: THREE.DoubleSide,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            const instancedMesh = new THREE.InstancedMesh(petalGeometry, petalMaterial, petalCount);
+
+            // Setup petal instances
+            const offsets = [];
+            const petalIndices = [];
+            const colors = [];
+            const randomSeeds = [];
+
+            for (let p = 0; p < petalCount; p++) {
+                const petalAngle = (p / petalCount) * Math.PI * 2;
+                const matrix = new THREE.Matrix4();
+                matrix.makeRotationZ(petalAngle);
+                instancedMesh.setMatrixAt(p, matrix);
+
+                offsets.push((Math.random() - 0.5) * 0.005, 0, (Math.random() - 0.5) * 0.005);
+                petalIndices.push(p);
+
+                const color = new THREE.Color(palette[p % palette.length]);
+                colors.push(color.r, color.g, color.b);
+                randomSeeds.push(Math.random());
+            }
+
+            petalGeometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(new Float32Array(offsets), 3));
+            petalGeometry.setAttribute('aPetalIndex', new THREE.InstancedBufferAttribute(new Float32Array(petalIndices), 1));
+            petalGeometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(new Float32Array(colors), 3));
+            petalGeometry.setAttribute('aRandomSeed', new THREE.InstancedBufferAttribute(new Float32Array(randomSeeds), 1));
+
+            // Scale down flowers
+            instancedMesh.scale.setScalar(0.4 + Math.random() * 0.2);
+
+            flowerGroup.add(instancedMesh);
+
+            // Add simple stamen center
+            const centerGeometry = new THREE.SphereGeometry(0.015, 6, 6);
+            const centerMaterial = new THREE.MeshStandardMaterial({
+                color: 0xffee88,
+                emissive: 0xffaa00,
+                emissiveIntensity: 0.3
+            });
+            const center = new THREE.Mesh(centerGeometry, centerMaterial);
+            flowerGroup.add(center);
+
+            // Position and orient flower
+            flowerGroup.position.copy(position);
+            flowerGroup.position.x += treeX;
+            flowerGroup.position.z += treeZ;
+
+            // Face slightly outward/upward
+            flowerGroup.lookAt(
+                flowerGroup.position.x + direction.x,
+                flowerGroup.position.y + 0.5,
+                flowerGroup.position.z + direction.z
+            );
+
+            return {
+                group: flowerGroup,
+                mesh: instancedMesh,
+                material: petalMaterial
+            };
+        }
+
+
+        // Cherry blossom (桜) petal geometry - heart-shaped notch at tip
+        function createCherryBlossomPetalGeometry() {
+            const shape = new THREE.Shape();
+
+            const width = 0.25;   // Petal width
+            const length = 0.5;  // Petal length
+            const notchDepth = 0.08;  // Heart-shaped notch depth
+
+            // Start at base
+            shape.moveTo(0, 0);
+
+            // Left edge - gentle curve outward
+            shape.bezierCurveTo(
+                -width * 0.6, length * 0.2,
+                -width * 1.0, length * 0.5,
+                -width * 0.85, length * 0.85
+            );
+
+            // Left side of notch - curve to notch
+            shape.bezierCurveTo(
+                -width * 0.6, length * 0.95,
+                -width * 0.3, length * 1.0,
+                0, length - notchDepth  // Notch center
+            );
+
+            // Right side of notch - mirror
+            shape.bezierCurveTo(
+                width * 0.3, length * 1.0,
+                width * 0.6, length * 0.95,
+                width * 0.85, length * 0.85
+            );
+
+            // Right edge - back to base
+            shape.bezierCurveTo(
+                width * 1.0, length * 0.5,
+                width * 0.6, length * 0.2,
+                0, 0
+            );
+
+            const extrudeSettings = {
+                steps: 2,
+                depth: 0.008,  // Very thin petals
+                bevelEnabled: true,
+                bevelThickness: 0.003,
+                bevelSize: 0.01,
+                bevelSegments: 2
+            };
+
+            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            geometry.rotateX(Math.PI / 2);
+
+            return geometry;
+        }
+
+
+        // ============================================
+        // 3D GRASS CREATION
+        // ============================================
+        function create3DGrass() {
+            const grassGeometry = new THREE.PlaneGeometry(0.05, 1, 1, 8);
+
+            // Bend the grass blade
+            const positions = grassGeometry.attributes.position;
+            for (let i = 0; i < positions.count; i++) {
+                const y = positions.getY(i);
+                if (y > 0) {
+                    positions.setX(i, positions.getX(i) + y * y * 0.1);
+                }
+            }
+
+            const grassMaterial = new THREE.ShaderMaterial({
+                vertexShader: grassVertexShader,
+                fragmentShader: grassFragmentShader,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uWindStrength: { value: 0.3 }
+                },
+                transparent: true,
+                side: THREE.DoubleSide,
+                depthWrite: false
+            });
+
+            const grassColors = [
+                new THREE.Color('#3d5a35'),
+                new THREE.Color('#4a6741'),
+                new THREE.Color('#556b4e'),
+                new THREE.Color('#2d4a2a'),
+                new THREE.Color('#4e6e47')
+            ];
+
+            // Create instanced grass
+            const instanceCount = CONFIG.grassCount * 5; // Multiple blades per grass clump
+            const instancedGrass = new THREE.InstancedMesh(grassGeometry, grassMaterial, instanceCount);
+
+            const offsets = [];
+            const heights = [];
+            const colors = [];
+            const randomSeeds = [];
+
+            for (let i = 0; i < CONFIG.grassCount; i++) {
+                const radius = Math.random() * (CONFIG.groundSize / 2 - 2) + 0.5;
+                const angle = Math.random() * Math.PI * 2;
+                const baseX = Math.cos(angle) * radius;
+                const baseZ = Math.sin(angle) * radius;
+
+                // Create clump of 5 grass blades
+                for (let j = 0; j < 5; j++) {
+                    const idx = i * 5 + j;
+                    const offsetX = baseX + (Math.random() - 0.5) * 0.3;
+                    const offsetZ = baseZ + (Math.random() - 0.5) * 0.3;
+                    const height = 1.5 + Math.random() * 2;
+
+                    const matrix = new THREE.Matrix4();
+                    matrix.makeRotationY(Math.random() * Math.PI * 2);
+                    matrix.setPosition(offsetX, 0, offsetZ);
+                    instancedGrass.setMatrixAt(idx, matrix);
+
+                    offsets.push(offsetX, 0, offsetZ);
+                    heights.push(height);
+
+                    const color = grassColors[Math.floor(Math.random() * grassColors.length)];
+                    colors.push(color.r, color.g, color.b);
+                    randomSeeds.push(Math.random());
+                }
+
+                updateLoadingProgress();
+            }
+
+            grassGeometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(new Float32Array(offsets), 3));
+            grassGeometry.setAttribute('aHeight', new THREE.InstancedBufferAttribute(new Float32Array(heights), 1));
+            grassGeometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(new Float32Array(colors), 3));
+            grassGeometry.setAttribute('aRandomSeed', new THREE.InstancedBufferAttribute(new Float32Array(randomSeeds), 1));
+
+            scene.add(instancedGrass);
+
+            grasses.push({
+                mesh: instancedGrass,
+                material: grassMaterial
+            });
+        }
+
+        // ============================================
+        // FALLING PETALS - Natural cherry blossom fall
+        // ============================================
+        function createFallingPetals() {
+            const positions = [];
+            const velocities = [];
+            const rotationSpeeds = [];
+            const sizes = [];
+            const colors = [];
+            const lives = [];
+            const tumblePhases = [];
+
+            // Cherry blossom petal colors - more pale/white for falling petals
+            const petalColors = [
+                ...CONFIG.flowerPalette.sakuraPale,
+                ...CONFIG.flowerPalette.sakuraWhite,
+                ...CONFIG.flowerPalette.sakuraMix
+            ];
+
+            // Tree positions for spawning petals near trees
+            const treePositions = [];
+            for (let i = 0; i < 8; i++) {
+                const progress = i / 7;
+                const z = (progress - 0.5) * (CONFIG.groundSize - 10);
+                treePositions.push({ x: -8 - Math.random() * 3, z: z });
+                treePositions.push({ x: 8 + Math.random() * 3, z: z });
+            }
+            // Back trees
+            for (let i = 0; i < 4; i++) {
+                treePositions.push({
+                    x: (Math.random() - 0.5) * 20,
+                    z: -CONFIG.groundSize / 2 + 5 + Math.random() * 5
+                });
+            }
+
+            for (let i = 0; i < CONFIG.fallingPetalCount; i++) {
+                let x, z;
+
+                // 70% of petals spawn near trees, 30% random in the air
+                if (Math.random() < 0.7 && treePositions.length > 0) {
+                    const tree = treePositions[Math.floor(Math.random() * treePositions.length)];
+                    // Spread around tree crown
+                    const spreadRadius = 3 + Math.random() * 2;
+                    const spreadAngle = Math.random() * Math.PI * 2;
+                    x = tree.x + Math.cos(spreadAngle) * spreadRadius * Math.random();
+                    z = tree.z + Math.sin(spreadAngle) * spreadRadius * Math.random();
+                } else {
+                    // Random position in the arch
+                    x = (Math.random() - 0.5) * CONFIG.archWidth * 0.8;
+                    z = (Math.random() - 0.5) * CONFIG.groundSize * 0.9;
+                }
+
+                // Height - most start from tree/crown height
+                const y = 4 + Math.random() * 10;
+
+                positions.push(x, y, z);
+
+                // Velocity - mainly downward with slight drift
+                velocities.push(
+                    (Math.random() - 0.5) * 0.05,
+                    -0.3 - Math.random() * 0.3,
+                    (Math.random() - 0.5) * 0.05
+                );
+
+                // Rotation speed - varies for natural look
+                rotationSpeeds.push(0.3 + Math.random() * 1.2);
+
+                // Size - small like real cherry petals
+                sizes.push(1.5 + Math.random() * 2.0);
+
+                // Color
+                const color = new THREE.Color(petalColors[Math.floor(Math.random() * petalColors.length)]);
+                colors.push(color.r, color.g, color.b);
+
+                // Life phase - staggers the animation
+                lives.push(Math.random());
+
+                // Tumble phase - for variety in tumbling
+                tumblePhases.push(Math.random() * Math.PI * 2);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('aVelocity', new THREE.Float32BufferAttribute(velocities, 3));
+            geometry.setAttribute('aRotationSpeed', new THREE.Float32BufferAttribute(rotationSpeeds, 1));
+            geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
+            geometry.setAttribute('aColor', new THREE.Float32BufferAttribute(colors, 3));
+            geometry.setAttribute('aLife', new THREE.Float32BufferAttribute(lives, 1));
+            geometry.setAttribute('aTumblePhase', new THREE.Float32BufferAttribute(tumblePhases, 1));
+
+            const material = new THREE.ShaderMaterial({
+                vertexShader: petalVertexShader,
+                fragmentShader: petalFragmentShader,
+                uniforms: {
+                    uTime: { value: 0 },
+                    uWindDirection: { value: new THREE.Vector3(1, 0, 0.3).normalize() },
+                    uWindStrength: { value: 0.5 }
+                },
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            fallingPetals = new THREE.Points(geometry, material);
+            scene.add(fallingPetals);
+        }
+
+        function updateLoadingProgress() {
+            loadedCount++;
+            const progress = (loadedCount / totalToLoad) * 100;
+            document.getElementById('progress-fill').style.width = progress + '%';
+
+            if (loadedCount >= totalToLoad) {
+                setTimeout(() => {
+                    document.getElementById('loading').classList.add('hidden');
+                    setTimeout(() => {
+                        document.getElementById('instructions').classList.add('hidden');
+                    }, 8000);
+                }, 800);
+            }
+        }
+
+        // ============================================
+        // CONTROLS
+        // ============================================
+        function setupControls() {
+            const canvas = renderer.domElement;
+
+            canvas.addEventListener('mousedown', (e) => {
+                isMouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            });
+
+            canvas.addEventListener('mousemove', (e) => {
+                if (isMouseDown) {
+                    const deltaX = e.clientX - lastMouseX;
+                    const deltaY = e.clientY - lastMouseY;
+
+                    cameraYaw -= deltaX * CONFIG.lookSensitivity;
+                    cameraPitch -= deltaY * CONFIG.lookSensitivity;
+                    cameraPitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, cameraPitch));
+
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                }
+            });
+
+            canvas.addEventListener('mouseup', () => { isMouseDown = false; });
+            canvas.addEventListener('mouseleave', () => { isMouseDown = false; });
+
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                targetCameraZ += e.deltaY * 0.015;
+                targetCameraZ = Math.max(-CONFIG.groundSize / 2 + 3, Math.min(CONFIG.groundSize / 2 - 3, targetCameraZ));
+            }, { passive: false });
+
+            canvas.addEventListener('click', growNearbyFlowers);
+
+            // Touch support
+            let lastTouchX = 0, lastTouchY = 0;
+            canvas.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 1) {
+                    lastTouchX = e.touches[0].clientX;
+                    lastTouchY = e.touches[0].clientY;
+                }
+            }, { passive: true });
+
+            canvas.addEventListener('touchmove', (e) => {
+                if (e.touches.length === 1) {
+                    const deltaX = e.touches[0].clientX - lastTouchX;
+                    const deltaY = e.touches[0].clientY - lastTouchY;
+
+                    cameraYaw -= deltaX * CONFIG.lookSensitivity;
+                    cameraPitch -= deltaY * CONFIG.lookSensitivity;
+                    cameraPitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, cameraPitch));
+
+                    lastTouchX = e.touches[0].clientX;
+                    lastTouchY = e.touches[0].clientY;
+                }
+            }, { passive: true });
+
+            canvas.addEventListener('touchend', growNearbyFlowers);
+        }
+
+        function growNearbyFlowers() {
+            // With trees, clicking creates a burst of falling petals
+            const cameraPos = camera.position;
+
+            // Add extra falling petals near camera when clicked
+            if (fallingPetals && fallingPetals.geometry) {
+                const positions = fallingPetals.geometry.attributes.position;
+                const count = Math.min(20, positions.count);
+
+                for (let i = 0; i < count; i++) {
+                    const idx = Math.floor(Math.random() * positions.count);
+                    // Reset some petals to fall from near camera
+                    positions.setX(idx, cameraPos.x + (Math.random() - 0.5) * 5);
+                    positions.setY(idx, cameraPos.y + 3 + Math.random() * 5);
+                    positions.setZ(idx, cameraPos.z + (Math.random() - 0.5) * 5);
+                }
+                positions.needsUpdate = true;
+            }
+        }
+
+        // ============================================
+        // ANIMATION
+        // ============================================
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = clock.getElapsedTime();
+
+            // Camera movement
+            cameraZ += (targetCameraZ - cameraZ) * 0.03;
+            camera.position.z = cameraZ;
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = cameraYaw;
+            camera.rotation.x = cameraPitch;
+
+            // Update cherry tree flowers
+            cherryTrees.forEach(tree => {
+                tree.materials.forEach(material => {
+                    material.uniforms.uTime.value = time;
+                });
+            });
+
+            // Update grass
+            grasses.forEach(grass => {
+                grass.material.uniforms.uTime.value = time;
+            });
+
+            // Update falling petals with dynamic wind
+            if (fallingPetals) {
+                fallingPetals.material.uniforms.uTime.value = time;
+
+                // Dynamic wind direction - slowly changes
+                const windAngle = time * 0.1;
+                const windX = Math.sin(windAngle) * 0.8 + Math.sin(windAngle * 0.3) * 0.2;
+                const windZ = Math.cos(windAngle * 0.7) * 0.5;
+                fallingPetals.material.uniforms.uWindDirection.value.set(windX, 0, windZ).normalize();
+
+                // Varying wind strength - occasional gusts
+                const baseWind = 0.3;
+                const gust = Math.pow(Math.sin(time * 0.2) * 0.5 + 0.5, 2) * 0.7;
+                fallingPetals.material.uniforms.uWindStrength.value = baseWind + gust;
+            }
+
+            composer.render();
+
+            // FPS
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsTime >= 1000) {
+                document.getElementById('fps').textContent = `FPS: ${frameCount}`;
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ============================================
+        // INITIALIZATION
+        // ============================================
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => { initThree(); animate(); });
+        } else {
+            initThree();
+            animate();
+        }
+    </script>
+</body>
+</html>

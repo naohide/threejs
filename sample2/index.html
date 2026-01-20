@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grab Objects with Hand Tracking</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: 'Orbitron', monospace;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+
+        #video {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 200px;
+            height: 150px;
+            z-index: 100;
+            border: 2px solid #00ffff;
+            border-radius: 8px;
+            opacity: 0.8;
+            transform: scaleX(-1);
+        }
+
+        /* Scanlines overlay */
+        .scanlines {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 2;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(0, 0, 0, 0.1) 0px,
+                rgba(0, 0, 0, 0.1) 1px,
+                transparent 1px,
+                transparent 3px
+            );
+        }
+
+        /* Vignette */
+        .vignette {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 3;
+            background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.8) 100%);
+        }
+
+        /* HUD Elements */
+        .hud {
+            position: fixed;
+            color: #00ffff;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            z-index: 10;
+            text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff;
+        }
+
+        .hud-top-left {
+            top: 20px;
+            left: 20px;
+        }
+
+        .hud-top-right {
+            top: 20px;
+            right: 230px;
+        }
+
+        .hud-bottom-left {
+            bottom: 20px;
+            left: 20px;
+        }
+
+        .hud-bottom-right {
+            bottom: 20px;
+            right: 20px;
+        }
+
+        .hud-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff;
+            text-shadow: 0 0 15px #00ffff, 0 0 30px #00ffff;
+        }
+
+        .hud-label {
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+
+        /* Status indicators */
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .status-active {
+            background: #00ff88;
+            box-shadow: 0 0 10px #00ff88;
+        }
+
+        .status-inactive {
+            background: #ff0055;
+            box-shadow: 0 0 10px #ff0055;
+        }
+
+        .status-grabbing {
+            background: #ffff00;
+            box-shadow: 0 0 10px #ffff00;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Instructions */
+        .instructions {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            color: #00ffff;
+            font-size: 14px;
+            text-align: center;
+            text-shadow: 0 0 10px #00ffff;
+            opacity: 0.8;
+        }
+
+        .instructions h3 {
+            margin-bottom: 10px;
+            color: #fff;
+        }
+
+        .instructions p {
+            margin: 5px 0;
+        }
+
+        /* Object count display */
+        .object-info {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            color: #00ffff;
+            font-size: 14px;
+            text-align: center;
+            text-shadow: 0 0 10px #00ffff;
+        }
+
+        /* Add object button */
+        .add-button {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            padding: 12px 24px;
+            background: rgba(0, 255, 255, 0.2);
+            border: 2px solid #00ffff;
+            color: #00ffff;
+            font-family: 'Orbitron', monospace;
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .add-button:hover {
+            background: rgba(0, 255, 255, 0.4);
+            box-shadow: 0 0 20px #00ffff;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div class="scanlines"></div>
+    <div class="vignette"></div>
+
+    <video id="video" autoplay playsinline></video>
+
+    <!-- HUD -->
+    <div class="hud hud-top-left">
+        <div class="hud-label">FPS</div>
+        <div class="hud-value" id="fps-display">60</div>
+    </div>
+
+    <div class="hud hud-top-right">
+        <div class="hud-label">Objects</div>
+        <div class="hud-value" id="object-count">0</div>
+    </div>
+
+    <div class="hud hud-bottom-left">
+        <div class="hud-label">Left Hand</div>
+        <div><span class="status-indicator status-inactive" id="left-status"></span><span id="left-hand-status">Not Detected</span></div>
+    </div>
+
+    <div class="hud hud-bottom-right">
+        <div class="hud-label">Right Hand</div>
+        <div><span class="status-indicator status-inactive" id="right-status"></span><span id="right-hand-status">Not Detected</span></div>
+    </div>
+
+    <div class="instructions">
+        <h3>How to Play</h3>
+        <p>Pinch (thumb + index finger) to grab objects</p>
+        <p>Move your hand to lift and move objects</p>
+        <p>Release pinch to drop objects</p>
+    </div>
+
+    <button class="add-button" id="add-object-btn">Add Random Object</button>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <script>
+        // ============================================
+        // CONFIGURATION
+        // ============================================
+        const CONFIG = {
+            gravity: -0.3,
+            groundY: -250,
+            grabRadius: 80,
+            pinchThreshold: 0.08,
+            objectBounce: 0.5,
+            objectFriction: 0.98,
+            airResistance: 0.995,
+            maxVelocity: 30,
+            throwMultiplier: 2.0
+        };
+
+        // ============================================
+        // GLOBAL STATE
+        // ============================================
+        let scene, camera, renderer;
+        let clock = new THREE.Clock();
+        let frameCount = 0;
+        let lastTime = performance.now();
+
+        let leftHand = null;
+        let rightHand = null;
+        let leftPinching = false;
+        let rightPinching = false;
+        let leftGrabbedObject = null;
+        let rightGrabbedObject = null;
+
+        // Previous hand positions for velocity calculation
+        let prevLeftHandPos = null;
+        let prevRightHandPos = null;
+
+        // Array to store all physics objects
+        const physicsObjects = [];
+
+        // Hand visual indicators
+        let leftHandSphere = null;
+        let rightHandSphere = null;
+
+        // ============================================
+        // THREE.JS SETUP
+        // ============================================
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a1a);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.z = 500;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(200, 400, 200);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+
+            const pointLight1 = new THREE.PointLight(0x00ffff, 1, 1000);
+            pointLight1.position.set(-300, 200, 100);
+            scene.add(pointLight1);
+
+            const pointLight2 = new THREE.PointLight(0xff00ff, 1, 1000);
+            pointLight2.position.set(300, 200, 100);
+            scene.add(pointLight2);
+
+            // Create ground plane
+            createGround();
+
+            // Create hand indicators
+            createHandIndicators();
+
+            // Create initial objects
+            for (let i = 0; i < 8; i++) {
+                createRandomObject();
+            }
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createGround() {
+            const groundGeometry = new THREE.PlaneGeometry(1500, 1500);
+            const groundMaterial = new THREE.MeshStandardMaterial({
+                color: 0x111122,
+                metalness: 0.3,
+                roughness: 0.8,
+                transparent: true,
+                opacity: 0.8
+            });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = CONFIG.groundY;
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // Grid helper
+            const gridHelper = new THREE.GridHelper(1500, 30, 0x00ffff, 0x003344);
+            gridHelper.position.y = CONFIG.groundY + 1;
+            scene.add(gridHelper);
+        }
+
+        function createHandIndicators() {
+            const handGeometry = new THREE.SphereGeometry(20, 16, 16);
+
+            const leftMaterial = new THREE.MeshStandardMaterial({
+                color: 0x00ff88,
+                emissive: 0x00ff88,
+                emissiveIntensity: 0.3,
+                transparent: true,
+                opacity: 0.6
+            });
+            leftHandSphere = new THREE.Mesh(handGeometry, leftMaterial);
+            leftHandSphere.visible = false;
+            scene.add(leftHandSphere);
+
+            const rightMaterial = new THREE.MeshStandardMaterial({
+                color: 0xff8800,
+                emissive: 0xff8800,
+                emissiveIntensity: 0.3,
+                transparent: true,
+                opacity: 0.6
+            });
+            rightHandSphere = new THREE.Mesh(handGeometry, rightMaterial);
+            rightHandSphere.visible = false;
+            scene.add(rightHandSphere);
+        }
+
+        function createRandomObject() {
+            const shapes = ['box', 'sphere', 'cylinder', 'cone', 'torus'];
+            const shape = shapes[Math.floor(Math.random() * shapes.length)];
+
+            let geometry;
+            const size = 30 + Math.random() * 40;
+
+            switch (shape) {
+                case 'box':
+                    geometry = new THREE.BoxGeometry(size, size, size);
+                    break;
+                case 'sphere':
+                    geometry = new THREE.SphereGeometry(size / 2, 32, 32);
+                    break;
+                case 'cylinder':
+                    geometry = new THREE.CylinderGeometry(size / 2, size / 2, size, 32);
+                    break;
+                case 'cone':
+                    geometry = new THREE.ConeGeometry(size / 2, size, 32);
+                    break;
+                case 'torus':
+                    geometry = new THREE.TorusGeometry(size / 2, size / 6, 16, 32);
+                    break;
+            }
+
+            const hue = Math.random();
+            const color = new THREE.Color().setHSL(hue, 0.8, 0.5);
+
+            const material = new THREE.MeshStandardMaterial({
+                color: color,
+                metalness: 0.4,
+                roughness: 0.3,
+                emissive: color,
+                emissiveIntensity: 0.1
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+
+            // Random position above ground
+            mesh.position.x = (Math.random() - 0.5) * 600;
+            mesh.position.y = 100 + Math.random() * 200;
+            mesh.position.z = (Math.random() - 0.5) * 200;
+
+            // Random rotation
+            mesh.rotation.x = Math.random() * Math.PI;
+            mesh.rotation.y = Math.random() * Math.PI;
+            mesh.rotation.z = Math.random() * Math.PI;
+
+            scene.add(mesh);
+
+            // Physics properties
+            const physicsObj = {
+                mesh: mesh,
+                velocity: new THREE.Vector3(0, 0, 0),
+                angularVelocity: new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.1,
+                    (Math.random() - 0.5) * 0.1,
+                    (Math.random() - 0.5) * 0.1
+                ),
+                mass: size * 0.5,
+                size: size,
+                isGrabbed: false,
+                originalColor: color.clone()
+            };
+
+            physicsObjects.push(physicsObj);
+            updateObjectCount();
+
+            return physicsObj;
+        }
+
+        function updateObjectCount() {
+            document.getElementById('object-count').textContent = physicsObjects.length;
+        }
+
+        // ============================================
+        // HAND TRACKING
+        // ============================================
+        function initMediaPipe() {
+            const video = document.getElementById('video');
+
+            const hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
+            });
+
+            hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.7,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onHandResults);
+
+            const cameraUtils = new Camera(video, {
+                onFrame: async () => {
+                    await hands.send({ image: video });
+                },
+                width: 640,
+                height: 480
+            });
+
+            cameraUtils.start();
+        }
+
+        function onHandResults(results) {
+            leftHand = null;
+            rightHand = null;
+
+            if (results.multiHandLandmarks && results.multiHandedness) {
+                for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                    const landmarks = results.multiHandLandmarks[i];
+                    const handedness = results.multiHandedness[i].label;
+
+                    // Mirror the handedness since video is mirrored
+                    if (handedness === 'Right') {
+                        leftHand = landmarks;
+                    } else {
+                        rightHand = landmarks;
+                    }
+                }
+            }
+
+            updateHandStatus();
+            processHandGestures();
+        }
+
+        function getPinchPosition(landmarks) {
+            // Get average position between thumb tip and index finger tip
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+
+            return {
+                x: (thumbTip.x + indexTip.x) / 2,
+                y: (thumbTip.y + indexTip.y) / 2,
+                z: (thumbTip.z + indexTip.z) / 2
+            };
+        }
+
+        function isPinching(landmarks) {
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+
+            const distance = Math.sqrt(
+                Math.pow(thumbTip.x - indexTip.x, 2) +
+                Math.pow(thumbTip.y - indexTip.y, 2) +
+                Math.pow(thumbTip.z - indexTip.z, 2)
+            );
+
+            return distance < CONFIG.pinchThreshold;
+        }
+
+        function handPosToWorld(handPos) {
+            // Convert normalized hand position to world coordinates
+            const x = (0.5 - handPos.x) * window.innerWidth;
+            const y = (0.5 - handPos.y) * window.innerHeight;
+            const z = -handPos.z * 500;
+
+            return new THREE.Vector3(x, y, z);
+        }
+
+        function updateHandStatus() {
+            const leftStatusEl = document.getElementById('left-status');
+            const rightStatusEl = document.getElementById('right-status');
+            const leftTextEl = document.getElementById('left-hand-status');
+            const rightTextEl = document.getElementById('right-hand-status');
+
+            if (leftHand) {
+                const pinchPos = getPinchPosition(leftHand);
+                const worldPos = handPosToWorld(pinchPos);
+                leftHandSphere.position.copy(worldPos);
+                leftHandSphere.visible = true;
+
+                leftPinching = isPinching(leftHand);
+
+                leftStatusEl.classList.remove('status-inactive', 'status-active', 'status-grabbing');
+                if (leftGrabbedObject) {
+                    leftStatusEl.classList.add('status-grabbing');
+                    leftTextEl.textContent = 'Grabbing';
+                } else if (leftPinching) {
+                    leftStatusEl.classList.add('status-active');
+                    leftTextEl.textContent = 'Pinching';
+                } else {
+                    leftStatusEl.classList.add('status-active');
+                    leftTextEl.textContent = 'Open';
+                }
+            } else {
+                leftHandSphere.visible = false;
+                leftStatusEl.classList.remove('status-active', 'status-grabbing');
+                leftStatusEl.classList.add('status-inactive');
+                leftTextEl.textContent = 'Not Detected';
+                leftPinching = false;
+            }
+
+            if (rightHand) {
+                const pinchPos = getPinchPosition(rightHand);
+                const worldPos = handPosToWorld(pinchPos);
+                rightHandSphere.position.copy(worldPos);
+                rightHandSphere.visible = true;
+
+                rightPinching = isPinching(rightHand);
+
+                rightStatusEl.classList.remove('status-inactive', 'status-active', 'status-grabbing');
+                if (rightGrabbedObject) {
+                    rightStatusEl.classList.add('status-grabbing');
+                    rightTextEl.textContent = 'Grabbing';
+                } else if (rightPinching) {
+                    rightStatusEl.classList.add('status-active');
+                    rightTextEl.textContent = 'Pinching';
+                } else {
+                    rightStatusEl.classList.add('status-active');
+                    rightTextEl.textContent = 'Open';
+                }
+            } else {
+                rightHandSphere.visible = false;
+                rightStatusEl.classList.remove('status-active', 'status-grabbing');
+                rightStatusEl.classList.add('status-inactive');
+                rightTextEl.textContent = 'Not Detected';
+                rightPinching = false;
+            }
+        }
+
+        function processHandGestures() {
+            // Process left hand grab
+            if (leftHand) {
+                const pinchPos = getPinchPosition(leftHand);
+                const worldPos = handPosToWorld(pinchPos);
+
+                if (leftPinching) {
+                    if (!leftGrabbedObject) {
+                        // Try to grab an object
+                        leftGrabbedObject = findNearestObject(worldPos, rightGrabbedObject);
+                        if (leftGrabbedObject) {
+                            leftGrabbedObject.isGrabbed = true;
+                            leftGrabbedObject.mesh.material.emissiveIntensity = 0.5;
+                        }
+                    }
+                } else {
+                    // Release object
+                    if (leftGrabbedObject) {
+                        releaseObject(leftGrabbedObject, prevLeftHandPos, worldPos);
+                        leftGrabbedObject = null;
+                    }
+                }
+
+                prevLeftHandPos = worldPos.clone();
+            } else {
+                if (leftGrabbedObject) {
+                    leftGrabbedObject.isGrabbed = false;
+                    leftGrabbedObject.mesh.material.emissiveIntensity = 0.1;
+                    leftGrabbedObject = null;
+                }
+                prevLeftHandPos = null;
+            }
+
+            // Process right hand grab
+            if (rightHand) {
+                const pinchPos = getPinchPosition(rightHand);
+                const worldPos = handPosToWorld(pinchPos);
+
+                if (rightPinching) {
+                    if (!rightGrabbedObject) {
+                        // Try to grab an object
+                        rightGrabbedObject = findNearestObject(worldPos, leftGrabbedObject);
+                        if (rightGrabbedObject) {
+                            rightGrabbedObject.isGrabbed = true;
+                            rightGrabbedObject.mesh.material.emissiveIntensity = 0.5;
+                        }
+                    }
+                } else {
+                    // Release object
+                    if (rightGrabbedObject) {
+                        releaseObject(rightGrabbedObject, prevRightHandPos, worldPos);
+                        rightGrabbedObject = null;
+                    }
+                }
+
+                prevRightHandPos = worldPos.clone();
+            } else {
+                if (rightGrabbedObject) {
+                    rightGrabbedObject.isGrabbed = false;
+                    rightGrabbedObject.mesh.material.emissiveIntensity = 0.1;
+                    rightGrabbedObject = null;
+                }
+                prevRightHandPos = null;
+            }
+        }
+
+        function findNearestObject(position, excludeObject) {
+            let nearest = null;
+            let nearestDist = CONFIG.grabRadius;
+
+            for (const obj of physicsObjects) {
+                if (obj === excludeObject || obj.isGrabbed) continue;
+
+                const dist = position.distanceTo(obj.mesh.position);
+                if (dist < nearestDist) {
+                    nearest = obj;
+                    nearestDist = dist;
+                }
+            }
+
+            return nearest;
+        }
+
+        function releaseObject(obj, prevPos, currentPos) {
+            obj.isGrabbed = false;
+            obj.mesh.material.emissiveIntensity = 0.1;
+
+            // Calculate throw velocity based on hand movement
+            if (prevPos && currentPos) {
+                const throwVelocity = new THREE.Vector3()
+                    .subVectors(currentPos, prevPos)
+                    .multiplyScalar(CONFIG.throwMultiplier);
+
+                // Clamp velocity
+                if (throwVelocity.length() > CONFIG.maxVelocity) {
+                    throwVelocity.normalize().multiplyScalar(CONFIG.maxVelocity);
+                }
+
+                obj.velocity.copy(throwVelocity);
+            }
+        }
+
+        // ============================================
+        // PHYSICS UPDATE
+        // ============================================
+        function updatePhysics() {
+            for (const obj of physicsObjects) {
+                if (obj.isGrabbed) {
+                    // Move grabbed object to hand position
+                    let targetPos = null;
+
+                    if (leftGrabbedObject === obj && leftHand) {
+                        const pinchPos = getPinchPosition(leftHand);
+                        targetPos = handPosToWorld(pinchPos);
+                    } else if (rightGrabbedObject === obj && rightHand) {
+                        const pinchPos = getPinchPosition(rightHand);
+                        targetPos = handPosToWorld(pinchPos);
+                    }
+
+                    if (targetPos) {
+                        // Smooth lerp to target position
+                        obj.mesh.position.lerp(targetPos, 0.3);
+                        obj.velocity.set(0, 0, 0);
+                    }
+                } else {
+                    // Apply gravity
+                    obj.velocity.y += CONFIG.gravity;
+
+                    // Apply air resistance
+                    obj.velocity.multiplyScalar(CONFIG.airResistance);
+
+                    // Update position
+                    obj.mesh.position.add(obj.velocity);
+
+                    // Ground collision
+                    const groundLevel = CONFIG.groundY + obj.size / 2;
+                    if (obj.mesh.position.y < groundLevel) {
+                        obj.mesh.position.y = groundLevel;
+
+                        // Bounce
+                        if (Math.abs(obj.velocity.y) > 1) {
+                            obj.velocity.y *= -CONFIG.objectBounce;
+                            // Add some friction when bouncing
+                            obj.velocity.x *= CONFIG.objectFriction;
+                            obj.velocity.z *= CONFIG.objectFriction;
+                        } else {
+                            obj.velocity.y = 0;
+                        }
+
+                        // Friction on ground
+                        obj.velocity.x *= CONFIG.objectFriction;
+                        obj.velocity.z *= CONFIG.objectFriction;
+                    }
+
+                    // Wall boundaries
+                    const wallLimit = 700;
+                    if (Math.abs(obj.mesh.position.x) > wallLimit) {
+                        obj.mesh.position.x = Math.sign(obj.mesh.position.x) * wallLimit;
+                        obj.velocity.x *= -CONFIG.objectBounce;
+                    }
+                    if (Math.abs(obj.mesh.position.z) > wallLimit) {
+                        obj.mesh.position.z = Math.sign(obj.mesh.position.z) * wallLimit;
+                        obj.velocity.z *= -CONFIG.objectBounce;
+                    }
+
+                    // Apply angular velocity
+                    obj.mesh.rotation.x += obj.angularVelocity.x;
+                    obj.mesh.rotation.y += obj.angularVelocity.y;
+                    obj.mesh.rotation.z += obj.angularVelocity.z;
+
+                    // Dampen angular velocity
+                    obj.angularVelocity.multiplyScalar(0.995);
+                }
+            }
+        }
+
+        // ============================================
+        // ANIMATION LOOP
+        // ============================================
+        function animate() {
+            requestAnimationFrame(animate);
+
+            updatePhysics();
+            renderer.render(scene, camera);
+
+            // FPS counter
+            frameCount++;
+            const now = performance.now();
+            if (now - lastTime >= 1000) {
+                document.getElementById('fps-display').textContent = frameCount;
+                frameCount = 0;
+                lastTime = now;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ============================================
+        // INITIALIZATION
+        // ============================================
+        function init() {
+            initThree();
+            initMediaPipe();
+            animate();
+
+            // Add object button
+            document.getElementById('add-object-btn').addEventListener('click', () => {
+                createRandomObject();
+            });
+        }
+
+        // Start when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    </script>
+</body>
+</html>
